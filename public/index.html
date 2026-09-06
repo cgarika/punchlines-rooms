@@ -360,7 +360,7 @@ function renderGame(r){
   $("gameCode").textContent = "· " + r.code;
   $("roundtag").textContent = r.status==="over" ? "FINAL SCORES" : `ROUND ${r.round} OF ${r.rounds} · ${r.phase.toUpperCase()}`;
   $("strip").innerHTML = r.players.map((p,i)=>`
-    <div class="pill${p.left?" gone":""}">${p.left?"💀":p.avatar} ${esc(p.name)}
+    <div class="pill${p.left?" gone":""}">${p.left?"💀":p.avatar} ${i===S.mySeat?"You":esc(p.name)}
       <span class="sc">${p.score}</span>
       ${r.phase==="write"&&p.submitted?'<span class="tick">✔</span>':""}
       ${r.phase==="vote"&&p.voted?'<span class="tick">🗳</span>':""}
@@ -371,7 +371,7 @@ function renderGame(r){
   const me = r.players[S.mySeat];
   const iWrite = r.phase==="write" && me && !me.left && r.yourSub===null;
   $("writebox").classList.toggle("hidden", !(r.phase==="write" && me && !me.left));
-  $("subBtn").disabled = !iWrite;
+  $("subBtn").disabled = !iWrite || !$("subIn").value.trim();   // no locking in an empty answer
   $("subBtn").textContent = r.yourSub!==null ? "Locked ✔" : "Lock it in";
 
   const ek = r.phase + ":" + r.round;
@@ -394,7 +394,7 @@ function renderGame(r){
 
   if (r.status==="over") $("actionhint").innerHTML = "";
   else if (r.phase==="write") $("actionhint").innerHTML = r.yourSub!==null ? "Locked. Waiting for the slow typists…" : "Write your answer — <b>nobody sees who wrote what</b>.";
-  else if (r.phase==="vote") $("actionhint").innerHTML = r.yourVote ? "Vote locked. Sweating yet?" : "<b>Tap the funniest.</b> Your own is greyed out.";
+  else if (r.phase==="vote") $("actionhint").innerHTML = r.yourVote ? "Vote locked. Sweating yet?" : "<b>Tap the funniest</b> — you can't vote for your own.";
   else if (r.phase==="reveal") $("actionhint").innerHTML = "The authors, revealed. Judge them.";
   $("log").textContent = r.log || "";
   $("log").classList.toggle("hidden", /^Round \d+ of \d+\. Fill in the blank|^Vote for the funniest/.test(r.log || ""));   // the round tag / action hint already say it
@@ -533,6 +533,7 @@ socket.on("voice", async (msg)=>{
     } else if (d.ice){ await pc.addIceCandidate(d.ice); }
   }catch(e){}
 });
+$("subIn").addEventListener("input", ()=>{ if (S.room && S.room.phase==="write") $("subBtn").disabled = !$("subIn").value.trim() || !!S.room.yourSub; });
 </script>
 </body>
 </html>
