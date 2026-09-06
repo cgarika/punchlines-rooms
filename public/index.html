@@ -67,7 +67,7 @@
   .roundtag{ flex:1; font-weight:900; font-size:13px; letter-spacing:.1em; color:var(--mut); }
   .timer{ width:44px; height:44px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center;
     font-weight:900; font-size:13px; background:conic-gradient(var(--gold) calc(var(--pct,0)*1%), rgba(255,255,255,.08) 0); }
-  .timer span{ width:35px; height:35px; border-radius:50%; background:#161a33; display:flex; align-items:center; justify-content:center; }
+  .timer span{ width:35px; height:35px; font-size:12px; letter-spacing:-.02em; border-radius:50%; background:#161a33; display:flex; align-items:center; justify-content:center; }
   .strip{ width:100%; max-width:560px; display:flex; gap:7px; flex-wrap:wrap; justify-content:center; margin-bottom:10px; }
   .pill{ display:flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; background:rgba(26,30,52,.72);
     border:1px solid rgba(255,255,255,.1); font-weight:800; font-size:13px; }
@@ -420,7 +420,7 @@ setInterval(()=>{
   const r=S.room;
   if(!r||!r.phaseEndsAt||r.status!=="playing"){ $("timerNum").textContent="–"; $("timer").style.setProperty("--pct",0); return; }
   const left=Math.max(0, r.phaseEndsAt-Date.now());
-  $("timerNum").textContent=Math.ceil(left/1000);
+  $("timerNum").textContent=Math.ceil(left/1000)+"s";
   const total=r._total||(r._total=left);
   $("timer").style.setProperty("--pct", Math.round((left/Math.max(total,1))*100));
 },250);
