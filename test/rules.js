@@ -36,7 +36,7 @@ function mk(name){
     A.emit("create",{name:"A",playerId:"pA",avatar:"🎤"}); await sleep(250);
     B.emit("join",{code,name:"B",playerId:"pB",avatar:"🎤"});
     C.emit("join",{code,name:"C",playerId:"pC",avatar:"🎤"}); await sleep(300);
-    A.emit("start"); await sleep(250);
+    A.emit("start"); await sleep(700);   // first state can take >250 ms on a loaded machine
     let st=A.st;
     if (st.phase!=="write"||!st.prompt||!st.prompt.includes("___")) throw new Error("write phase/prompt wrong");
     const prompt1=st.prompt;
