@@ -397,7 +397,7 @@ function renderGame(r){
   else if (r.phase==="vote") $("actionhint").innerHTML = r.yourVote ? "Vote locked. Sweating yet?" : "<b>Tap the funniest.</b> Your own is greyed out.";
   else if (r.phase==="reveal") $("actionhint").innerHTML = "The authors, revealed. Judge them.";
   $("log").textContent = r.log || "";
-  $("log").classList.toggle("hidden", /^Round \d+ of \d+\. Fill in the blank/.test(r.log || ""));   // the round tag already says it
+  $("log").classList.toggle("hidden", /^Round \d+ of \d+\. Fill in the blank|^Vote for the funniest/.test(r.log || ""));   // the round tag / action hint already say it
   $("overbox").classList.toggle("hidden", r.status!=="over");
   if (r.status==="over"){
     $("winname").textContent = r.winner!=null ? r.players[r.winner].name + " wins the mic!" : "Game over";
