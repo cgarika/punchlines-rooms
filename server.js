@@ -18,6 +18,8 @@ const ROUNDS = Number(process.env.ROUNDS || 3);
 const WRITE_MS = Number(process.env.WRITE_MS || 75000);
 const VOTE_MS = Number(process.env.VOTE_MS || 45000);
 const REVEAL_MS = Number(process.env.REVEAL_MS || 12000);
+const AFK_MS = Math.max(200, Number(process.env.AFK_MS || 5000));   // T1: the phase ends this soon once everyone still to act is disconnected
+const TIMEOUTS_TO_BOT = 3;                                              // consecutive missed phases before the seat is skipped automatically
 
 const PROMPTS = [
 "The worst thing to say at a wedding is ___",
@@ -153,20 +155,56 @@ function nextOrEnd(room) {
     room.phaseEndsAt = null;
   } else beginWrite(room);
 }
+/* T1 AFK policy. No bot heuristic here: a skipped seat is simply not waited for.
+   "Pending" = active players who still owe the phase's action and are not marked away. */
+function pendingActors(room) {
+  const act = activeSeats(room).filter((s) => !room.players[s].botControlled);
+  if (room.phase === "write") return act.filter((s) => room.subs[s] === undefined).map((s) => room.players[s]);
+  if (room.phase === "vote") return act.filter((s) => room.votes[s] === undefined).map((s) => room.players[s]);
+  return [];
+}
+function refreshAfkClock(room) {
+  if (room.status !== "playing" || !["write", "vote"].includes(room.phase)) return;
+  const pend = pendingActors(room);
+  if (!pend.length) { if (maybeAdvance(room)) return; }
+  if (!pend.length || pend.some((p) => p.connected)) return;
+  const soon = Date.now() + AFK_MS;
+  if (room.phaseEndsAt && room.phaseEndsAt <= soon) return;
+  room.phaseEndsAt = soon;
+  clearT(room.code);
+  timers.set(room.code, setTimeout(() => onPhaseTimeout(room.code), AFK_MS));
+}
 function armTimer(room, ms) {
   clearT(room.code);
   room.phaseEndsAt = Date.now() + ms;
-  timers.set(room.code, setTimeout(() => {
-    const r = rooms.get(room.code);
-    if (!r || r.status !== "playing") return;
-    if (r.phase === "write") beginVote(r);
-    else if (r.phase === "vote") beginReveal(r, false);
-    else if (r.phase === "reveal") nextOrEnd(r);
-    bump(r);
-  }, ms));
+  timers.set(room.code, setTimeout(() => onPhaseTimeout(room.code), ms));
+  refreshAfkClock(room);
+}
+function onPhaseTimeout(code) {
+  const r = rooms.get(code);
+  if (!r || r.status !== "playing") return;
+  const notes = [];
+  for (const p of pendingActors(r)) {
+    p.timeouts = (p.timeouts || 0) + 1;
+    if (p.timeouts >= TIMEOUTS_TO_BOT && !p.botControlled) { p.botControlled = true; notes.push(`${p.name} is away (missed ${TIMEOUTS_TO_BOT} in a row) — the room no longer waits for them.`); }
+  }
+  if (r.phase === "write") beginVote(r);
+  else if (r.phase === "vote") beginReveal(r, false);
+  else if (r.phase === "reveal") nextOrEnd(r);
+  if (notes.length) r.log = `${notes.join(" ")} ${r.log || ""}`.trim();
+  bump(r);
+}
+/* The human acts (or reconnects): stop skipping them and reset the streak. */
+function humanIsBack(room, p, reason) {
+  const wasBot = !!p.botControlled;
+  p.timeouts = 0;
+  if (!wasBot) return false;
+  p.botControlled = false;
+  room.log = `${p.name} is back${reason ? " (" + reason + ")" : ""}.`;
+  return true;
 }
 function maybeAdvance(room) {
-  const act = activeSeats(room);
+  const act = activeSeats(room).filter((s) => !room.players[s].botControlled);   // away seats are not waited for
   if (room.phase === "write" && act.every((s) => room.subs[s] !== undefined)) { beginVote(room); return true; }
   if (room.phase === "vote") {
     // everyone active must vote (including non-submitters)
@@ -187,7 +225,7 @@ function stateFor(room, seat) {
     hostSeat: room.players.findIndex((p) => p.id === room.host),
     minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS,
     players: room.players.map((p, s) => ({
-      name: p.name, avatar: p.avatar, left: p.left, connected: p.connected,
+      name: p.name, avatar: p.avatar, left: p.left, connected: p.connected, botControlled: !!p.botControlled,
       score: room.scores ? room.scores[s] : 0,
       submitted: room.phase === "write" ? room.subs && room.subs[s] !== undefined : undefined,
       voted: room.phase === "vote" ? room.votes && room.votes[s] !== undefined : undefined,
@@ -264,7 +302,7 @@ io.on("connection", (socket) => {
     if (!room) return socket.emit("err", "No room with that code.");
     socket.data.playerId = playerId;
     const existing = room.players.find((p) => p.id === playerId);
-    if (existing) { existing.connected = true; existing.left = false; attach(code); socket.emit("joined", { code }); bump(room); return; }
+    if (existing) { existing.connected = true; existing.left = false; humanIsBack(room, existing, "reconnected"); attach(code); socket.emit("joined", { code }); bump(room); return; }
     if (room.status !== "lobby") return socket.emit("err", "That game already started.");
     if (room.players.length >= MAX_PLAYERS) return socket.emit("err", "Room is full (12).");
     name = clean(name, 18); if (!name) return socket.emit("err", "Pick a name first.");
@@ -290,10 +328,11 @@ io.on("connection", (socket) => {
     const seat = mySeat();
     const me = room.players[seat];
     if (!me || me.left) return;
+    humanIsBack(room, me, "took the seat back"); me.timeouts = 0;
     text = clean(text, 90);
     if (!text) return socket.emit("err", "Write something first.");
     room.subs[seat] = text;
-    if (!maybeAdvance(room)) room.log = "Answers are coming in…";
+    if (!maybeAdvance(room)) { room.log = "Answers are coming in…"; refreshAfkClock(room); }
     bump(room);
   });
 
@@ -303,11 +342,12 @@ io.on("connection", (socket) => {
     const seat = mySeat();
     const me = room.players[seat];
     if (!me || me.left || !room.order) return;
+    humanIsBack(room, me, "took the seat back"); me.timeouts = 0;
     const entry = room.order.find((e) => e.id === id);
     if (!entry) return;
     if (entry.seat === seat) return socket.emit("err", "Nice try — you can't vote for yourself.");
     room.votes[seat] = id;
-    maybeAdvance(room);
+    if (!maybeAdvance(room)) refreshAfkClock(room);
     bump(room);
   });
 
@@ -316,6 +356,11 @@ io.on("connection", (socket) => {
     if (!room || room.status !== "playing" || room.phase !== "reveal" || room.host !== socket.data.playerId) return;
     nextOrEnd(room);
     bump(room);
+  });
+  socket.on("takeSeat", () => {
+    const room = currentRoom(); if (!room) return;
+    const me = room.players[mySeat()];
+    if (me && humanIsBack(room, me, "took the seat back")) bump(room);
   });
   socket.on("pushToken", ({ token } = {}) => { const room = currentRoom(); if (!room) return; const p = room.players.find((q) => q.id === socket.data.playerId); if (p && typeof token === "string" && /^[0-9a-f]{32,200}$/i.test(token)) p.pushToken = token; });
   socket.on("presence", ({ away } = {}) => { const room = currentRoom(); if (!room) return; const p = room.players.find((q) => q.id === socket.data.playerId); if (p) p.away = !!away; });
@@ -403,7 +448,7 @@ io.on("connection", (socket) => {
     const p = room.players.find((q) => q.id === socket.data.playerId);
     if (p) { p.connected = false; if (room.voice) room.voice.delete(room.players.indexOf(p)); room.v++; }
     detach();
-    if (rooms.has(room.code)) sendState(room.code);
+    if (rooms.has(room.code)) { refreshAfkClock(room); sendState(room.code); }
   });
 });
 

@@ -86,6 +86,31 @@ function mk(name){
     for (const c of cs) if (c.leaks.length) throw new Error(c.nm+": "+c.leaks[0]);
     console.log("PASS full game — 2 rounds, host skip, fresh prompts, winner C with 400");
     cs.forEach(c=>c.close());
+
+    // ---- Test 3 (T1 AFK policy): own fast-clock server on 3521 ----
+    {
+      const { spawn } = require("child_process");
+      const WRITE=700, AFK=250, P=3521, URL2="http://localhost:"+P;
+      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), ROUNDS:"6", WRITE_MS:String(WRITE), VOTE_MS:String(WRITE), REVEAL_MS:"60", AFK_MS:String(AFK) }, stdio:"ignore" });
+      await sleep(600);
+      const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.nm=name; c.st=null; c.seat=-1; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room&&room.log) c.logs.push(room.log); }); return c; };
+      const wait=async(fn,ms)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
+      const boot2=async(pfx)=>{ const cs=[mk2(pfx+"A"),mk2(pfx+"B"),mk2(pfx+"C")]; await sleep(250); let code=null; cs[0].on("joined",j=>{code=j.code;}); cs[0].emit("create",{name:pfx+"A",playerId:pfx+"a"+Math.random(),avatar:"🎤"}); await wait(()=>code,2000); cs[1].emit("join",{code,name:pfx+"B",playerId:pfx+"b"+Math.random(),avatar:"🎤"}); cs[2].emit("join",{code,name:pfx+"C",playerId:pfx+"c"+Math.random(),avatar:"🎤"}); await wait(()=>cs[0].st&&cs[0].st.players.length===3,2000); cs[0].emit("start"); await wait(()=>cs[0].st&&cs[0].st.phase==="write",2000); return cs; };
+      const auto=(c)=>c.on("state",()=>{ const r=c.st; if(!r||r.status!=="playing") return; setTimeout(()=>{ const r2=c.st; if(!r2||r2.status!=="playing") return; if(r2.phase==="write"&&r2.yourSub===null) c.emit("submit",{text:"answer "+c.nm+" r"+r2.round}); else if(r2.phase==="vote"&&!r2.yourVote&&r2.entries){ const e=r2.entries.find(x=>!x.mine); if(e) c.emit("vote",{id:e.id}); } },8); });
+      try {
+        // 3a. the last writer still to answer is disconnected → the write phase ends on the AFK clock
+        { const [A,B,C]=await boot2("p"); C.disconnect(); const t0=Date.now(); A.emit("submit",{text:"a"}); B.emit("submit",{text:"b"});
+          if(!(await wait(()=>A.st&&A.st.phase!=="write", WRITE+800))) throw new Error("AFK: write phase did not end with a disconnected writer"); const dt=Date.now()-t0; if(dt>=WRITE) throw new Error("AFK: waited the full clock ("+dt+" ms)");
+          console.log("PASS AFK write phase with a disconnected player ended after "+dt+" ms (clock "+WRITE+")"); A.disconnect(); B.disconnect(); }
+        // 3b. a connected player who never answers: 3 missed phases → marked away, the room stops waiting; a submit brings them back
+        { const [A,B,C]=await boot2("q"); auto(A); auto(B); const seat=C.seat;
+          if(!(await wait(()=>C.st&&C.st.players[seat].botControlled, WRITE*8))) throw new Error("AFK: idle player never marked away (status "+(C.st&&C.st.status)+", round "+(C.st&&C.st.round)+")");
+          if(!(await wait(()=>C.logs.some(l=>/is away/.test(l)),500))) throw new Error("AFK: no away log");
+          const roundThen=C.st.round; if(!(await wait(()=>C.st.round>roundThen||C.st.status==="over", 3000))) throw new Error("AFK: the room still waited for the away player");
+          C.emit("takeSeat"); if(!(await wait(()=>!C.st.players[seat].botControlled,1500))) throw new Error("AFK: takeSeat did not clear the flag");
+          console.log("PASS AFK 3 missed phases → away seat skipped, takeSeat brings the player back"); [A,B,C].forEach(c=>c.disconnect()); }
+      } finally { srv.kill(); }
+    }
     console.log("ALL PUNCHLINES TESTS PASS");
     process.exit(0);
   }catch(e){ console.error("FAIL:", e.message); process.exit(1); }

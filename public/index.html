@@ -196,6 +196,7 @@
   <div class="entrywrap" id="entrywrap"></div>
   <button class="btn orange small mt12 hidden" id="nextBtn">Next round →</button>
   <div class="actionhint" id="actionhint"></div>
+  <button class="btn hidden" id="seatBackBtn" style="width:auto;margin:6px auto 0;display:block" onclick="socket.emit('takeSeat')">Take my seat back</button>
   <div class="log" id="log"></div>
   <div class="overbox hidden" id="overbox">
     <div class="cup">🎤</div>
@@ -360,7 +361,7 @@ function renderGame(r){
   $("gameCode").textContent = "· " + r.code;
   $("roundtag").textContent = r.status==="over" ? "FINAL SCORES" : `ROUND ${r.round} OF ${r.rounds} · ${r.phase.toUpperCase()}`;
   $("strip").innerHTML = r.players.map((p,i)=>`
-    <div class="pill${p.left?" gone":""}">${p.left?"💀":p.avatar} ${i===S.mySeat?"You":esc(p.name)}
+    <div class="pill${p.left?" gone":""}">${p.left?"💀":p.avatar} ${i===S.mySeat?"You":esc(p.name)}${p.botControlled?' <span class="tick" title="Away — the room no longer waits for them">💤</span>':""}
       <span class="sc">${p.score}</span>
       ${r.phase==="write"&&p.submitted?'<span class="tick">✔</span>':""}
       ${r.phase==="vote"&&p.voted?'<span class="tick">🗳</span>':""}
@@ -392,7 +393,10 @@ function renderGame(r){
   $("entrywrap").innerHTML = entriesHTML;
   $("nextBtn").classList.toggle("hidden", !(r.phase==="reveal" && S.mySeat===r.hostSeat));
 
+  const meP = r.players[S.mySeat]; const meBot = meP && meP.botControlled && r.status==="playing";
+  $("seatBackBtn").classList.toggle("hidden", !meBot);
   if (r.status==="over") $("actionhint").innerHTML = "";
+  else if (meBot) $("actionhint").innerHTML = "You were marked away — <b>take your seat back</b> (or just answer) to rejoin.";
   else if (r.phase==="write") $("actionhint").innerHTML = r.yourSub!==null ? "Locked. Waiting for the slow typists…" : "Write your answer — <b>nobody sees who wrote what</b>.";
   else if (r.phase==="vote") $("actionhint").innerHTML = r.yourVote ? "Vote locked. Sweating yet?" : "<b>Tap the funniest</b> — you can't vote for your own.";
   else if (r.phase==="reveal") $("actionhint").innerHTML = "The authors, revealed. Judge them.";
