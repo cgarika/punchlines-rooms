@@ -120,7 +120,8 @@ function beginWrite(room) {
   armTimer(room, WRITE_MS);
 }
 function beginVote(room) {
-  const entries = Object.entries(room.subs).map(([seat, text]) => ({ id: "e" + seat, seat: Number(seat), text }));
+  // T4: entry ids are random — the seat stays server-side in room.order until the reveal
+  const entries = Object.entries(room.subs).map(([seat, text]) => ({ id: crypto.randomBytes(5).toString("hex"), seat: Number(seat), text }));
   if (entries.length < 2) { // not enough material to vote on
     room.log = "Not enough answers came in — skipping the vote.";
     return beginReveal(room, true);

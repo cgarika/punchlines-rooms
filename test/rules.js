@@ -18,6 +18,8 @@ function mk(name){
     s.st=room; s.seat=mySeat;
     if (room.phase==="vote" && room.entries){
       for (const e of room.entries){
+        if (/^e\d+$/.test(e.id) || !/^[0-9a-f]{10}$/.test(e.id)) s.leaks.push("T4: predictable/non-random entry id "+e.id);
+        if ("seat" in e || "author" in e) s.leaks.push("T4: entry leaks the seat");
         if (e.by!==undefined) s.leaks.push("author leaked during vote");
         if (e.votes!==undefined) s.leaks.push("tally leaked during vote");
       }
@@ -66,6 +68,7 @@ function mk(name){
     if (eC.votes!==2||eC.by===undefined) throw new Error("reveal tally/author wrong");
     const score=(n)=>st.players[st.entries.find(e=>e.text==="answer from "+n).by].score;
     if (score("C")!==200||score("A")!==100||score("B")!==0) throw new Error("scores wrong: "+st.players.map(p=>p.score));
+    // T4: vote-phase entries carry no seat and no predictable id; the reveal maps ids back to the right authors
     console.log("PASS round flow — anonymity held, self-vote blocked, 2 votes = 200 points");
 
     // host skips reveal -> round 2 with a fresh prompt
@@ -84,6 +87,8 @@ function mk(name){
     if (st.players[winSeat].name!=="C") throw new Error("winner wrong: "+st.players[winSeat].name);
     if (st.players[winSeat].score!==400) throw new Error("final score wrong");
     for (const c of cs) if (c.leaks.length) throw new Error(c.nm+": "+c.leaks[0]);
+    { const ent=A.st.entries||[]; if(!ent.length) throw new Error("T4: no entries at game end"); for(const e of ent){ if(typeof e.by!=="number") throw new Error("T4: reveal has no author"); const author=[A,B,C][e.by]; if(!author) throw new Error("T4: author seat out of range"); if(e.mine!==(e.by===A.seat)) throw new Error("T4: mine flag does not match the revealed author"); } }
+    console.log("PASS T4 hidden authorship — random ids during the vote, authors only at the reveal");
     console.log("PASS full game — 2 rounds, host skip, fresh prompts, winner C with 400");
     cs.forEach(c=>c.close());
 
