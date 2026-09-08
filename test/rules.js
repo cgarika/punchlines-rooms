@@ -111,6 +111,29 @@ function mk(name){
           console.log("PASS AFK 3 missed phases → away seat skipped, takeSeat brings the player back"); [A,B,C].forEach(c=>c.disconnect()); }
       } finally { srv.kill(); }
     }
+
+    // ---- T3 host handover: host disconnects during play → another human becomes host ----
+    {
+      const { spawn } = require("child_process");
+      const P=3531, URL2="http://localhost:"+P;
+      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), WRITE_MS:"60000", VOTE_MS:"60000", REVEAL_MS:"600" }, stdio:"ignore" });
+      await sleep(600);
+      const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.st=null; c.seat=-1; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room&&room.log) c.logs.push(room.log); }); return c; };
+      const wait=async(fn,ms=6000)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
+      try {
+        const n=3; const cs=[]; for(let i=0;i<n;i++) cs.push(mk2("H"+i)); await sleep(250); let code=null; cs[0].on("joined",j=>{code=j.code;});
+        cs[0].emit("create",{name:"H0",playerId:"h0"+Math.random(),avatar:"🦊"}); await wait(()=>code); for(let i=1;i<n;i++) cs[i].emit("join",{code,name:"H"+i,playerId:"h"+i+Math.random(),avatar:"🐼"}); await wait(()=>cs[0].st&&cs[0].st.players.length===n);
+        
+        cs[0].emit("start"); if(!(await wait(()=>cs[1].st&&cs[1].st.status==="playing"))) throw new Error("T3: game did not start");
+        if(cs[1].st.hostSeat!==cs[0].seat) throw new Error("T3: creator is not the host at start");
+        cs[0].disconnect();
+        if(!(await wait(()=>cs[1].st.hostSeat===cs[1].seat, 3000))) throw new Error("T3: host did not move to the connected human (hostSeat "+cs[1].st.hostSeat+")");
+        if(!cs[1].logs.some(l=>/is now the host/.test(l))) throw new Error("T3: no host log line");
+        console.log("PASS T3 host handover — host disconnected mid-game, next connected human is host");
+        
+        cs.forEach(c=>c.disconnect());
+      } finally { srv.kill(); }
+    }
     console.log("ALL PUNCHLINES TESTS PASS");
     process.exit(0);
   }catch(e){ console.error("FAIL:", e.message); process.exit(1); }

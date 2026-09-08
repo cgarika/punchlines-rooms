@@ -276,6 +276,18 @@ function sendState(code) {
   }
 }
 
+
+/* T3: the host seat follows the humans — first connected human, else first human still seated, else unchanged. */
+function ensureHost(room) {
+  const cur = room.players.find((p) => p.id === room.host);
+  if (cur && !cur.bot && !cur.left && cur.connected) return false;
+  const next = room.players.find((p) => !p.bot && !p.left && p.connected) || room.players.find((p) => !p.bot && !p.left);
+  if (!next || next.id === room.host) return false;
+  room.host = next.id;
+  room.log = `${next.name} is now the host.`;
+  return true;
+}
+
 io.on("connection", (socket) => {
   socket.data.playerId = null;
   socket.data.code = null;
@@ -446,7 +458,7 @@ io.on("connection", (socket) => {
     const room = currentRoom();
     if (!room) return;
     const p = room.players.find((q) => q.id === socket.data.playerId);
-    if (p) { p.connected = false; if (room.voice) room.voice.delete(room.players.indexOf(p)); room.v++; }
+    if (p) { p.connected = false; if (room.voice) room.voice.delete(room.players.indexOf(p)); ensureHost(room); room.v++; }
     detach();
     if (rooms.has(room.code)) { refreshAfkClock(room); sendState(room.code); }
   });
