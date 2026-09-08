@@ -102,8 +102,17 @@ function clearT(code) { const t = timers.get(code); if (t) { clearTimeout(t); ti
 function deleteRoom(code) { clearT(code); rooms.delete(code); roomSockets.delete(code); }
 function activeSeats(room) { return room.players.map((p, i) => (!p.left ? i : -1)).filter((i) => i >= 0); }
 
+/* T13: head-to-head rounds. Each round deals one prompt per active seat; prompt k goes to seats k and k+1 (mod P),
+   so every player answers two prompts and every prompt gets exactly two answers. Matchups are then voted one at a
+   time by everyone else: 100 points per vote, +100 "quiplash" bonus when at least two votes were cast and all of them
+   went to the same answer. Three rounds, then final scores. */
+function makeMatchups(seats, prompts) {
+  const P = seats.length;
+  return prompts.slice(0, P).map((prompt, k) => ({ id: crypto.randomBytes(5).toString("hex"), k, prompt, seats: [seats[k], seats[(k + 1) % P]], subs: {}, entries: null, votes: {}, tally: null, done: false }));
+}
 function setupGame(room) {
-  room.deck = shuffle(PROMPTS.slice()).slice(0, ROUNDS);
+  room.deck = shuffle(PROMPTS.slice());
+  room.deckPos = 0;
   room.round = 0;
   room.scores = room.players.map(() => 0);
   room.status = "playing";
@@ -111,37 +120,56 @@ function setupGame(room) {
 }
 function beginWrite(room) {
   room.round++;
-  room.prompt = room.deck[room.round - 1];
-  room.subs = {};       // seat -> text
-  room.order = null;    // shuffled entry ids for voting
-  room.votes = {};      // seat -> entryId
+  const act = activeSeats(room);
+  if (room.deckPos + act.length > room.deck.length) room.deck = room.deck.concat(shuffle(PROMPTS.slice()));
+  room.matchups = makeMatchups(act, room.deck.slice(room.deckPos, room.deckPos + act.length));
+  room.deckPos += act.length;
+  room.mi = -1;
   room.phase = "write";
-  room.log = `Round ${room.round} of ${ROUNDS}. Fill in the blank — funniest answer wins.`;
+  room.log = `Round ${room.round} of ${ROUNDS}. Two prompts each — fill in both blanks.`;
   armTimer(room, WRITE_MS);
 }
-function beginVote(room) {
-  // T4: entry ids are random — the seat stays server-side in room.order until the reveal
-  const entries = Object.entries(room.subs).map(([seat, text]) => ({ id: crypto.randomBytes(5).toString("hex"), seat: Number(seat), text }));
-  if (entries.length < 2) { // not enough material to vote on
-    room.log = "Not enough answers came in — skipping the vote.";
-    return beginReveal(room, true);
+function promptsOf(room, seat) { return (room.matchups || []).filter((m) => m.seats.includes(seat)); }
+function votersOf(room, m) { return activeSeats(room).filter((s) => !m.seats.includes(s)); }
+function currentMatchup(room) { return room.matchups && room.mi >= 0 ? room.matchups[room.mi] || null : null; }
+/* move to the next matchup that can be voted on; matchups with fewer than two answers are walkovers (no points) */
+function startMatchup(room) {
+  room.mi++;
+  while (room.matchups && room.mi < room.matchups.length) {
+    const m = room.matchups[room.mi];
+    // T4: entry ids are random — the seat stays server-side until the reveal
+    const entries = m.seats.map((seat) => ({ id: crypto.randomBytes(5).toString("hex"), seat, text: m.subs[seat] })).filter((e) => e.text !== undefined);
+    if (entries.length === 2 && votersOf(room, m).length) {
+      m.entries = shuffle(entries); m.votes = {};
+      room.phase = "vote";
+      room.log = `Matchup ${room.mi + 1} of ${room.matchups.length}. Pick the funnier answer.`;
+      armTimer(room, VOTE_MS);
+      return;
+    }
+    m.entries = entries; m.tally = {}; m.done = true; m.skipped = true;
+    for (const e of entries) { e.votes = 0; e.bonus = 0; e.pts = 0; }
+    room.mi++;
   }
-  room.order = shuffle(entries);
-  room.votes = {};
-  room.phase = "vote";
-  room.log = "Vote for the funniest — you can't pick your own.";
-  armTimer(room, VOTE_MS);
+  nextOrEnd(room);
 }
-function beginReveal(room, skipped) {
-  // tally
-  room.tally = {};
-  for (const [, eid] of Object.entries(room.votes || {})) room.tally[eid] = (room.tally[eid] || 0) + 1;
-  if (room.order) for (const e of room.order) {
-    const v = room.tally[e.id] || 0;
-    room.scores[e.seat] += v * 100;
+function beginVote(room) { room.mi = -1; startMatchup(room); }
+function revealMatchup(room) {
+  const m = currentMatchup(room);
+  if (!m || m.done) return;
+  m.tally = {};
+  for (const eid of Object.values(m.votes)) m.tally[eid] = (m.tally[eid] || 0) + 1;
+  const cast = Object.keys(m.votes).length;
+  let line = [];
+  for (const e of m.entries) {
+    e.votes = m.tally[e.id] || 0;
+    e.bonus = cast >= 2 && e.votes === cast ? 100 : 0;
+    e.pts = e.votes * 100 + e.bonus;
+    room.scores[e.seat] += e.pts;
+    line.push(`${room.players[e.seat].name} +${e.pts}${e.bonus ? " (QUIPLASH!)" : ""}`);
   }
+  m.done = true;
   room.phase = "reveal";
-  room.log = skipped ? "On to the next one." : "The authors, revealed:";
+  room.log = `The authors, revealed: ${line.join(" · ")}.`;
   armTimer(room, REVEAL_MS);
 }
 function nextOrEnd(room) {
@@ -160,8 +188,8 @@ function nextOrEnd(room) {
    "Pending" = active players who still owe the phase's action and are not marked away. */
 function pendingActors(room) {
   const act = activeSeats(room).filter((s) => !room.players[s].botControlled);
-  if (room.phase === "write") return act.filter((s) => room.subs[s] === undefined).map((s) => room.players[s]);
-  if (room.phase === "vote") return act.filter((s) => room.votes[s] === undefined).map((s) => room.players[s]);
+  if (room.phase === "write") return act.filter((s) => promptsOf(room, s).some((m) => m.subs[s] === undefined)).map((s) => room.players[s]);
+  if (room.phase === "vote") { const m = currentMatchup(room); if (!m) return []; return act.filter((s) => !m.seats.includes(s) && m.votes[s] === undefined).map((s) => room.players[s]); }
   return [];
 }
 function refreshAfkClock(room) {
@@ -190,8 +218,8 @@ function onPhaseTimeout(code) {
     if (p.timeouts >= TIMEOUTS_TO_BOT && !p.botControlled) { p.botControlled = true; notes.push(`${p.name} is away (missed ${TIMEOUTS_TO_BOT} in a row) — the room no longer waits for them.`); }
   }
   if (r.phase === "write") beginVote(r);
-  else if (r.phase === "vote") beginReveal(r, false);
-  else if (r.phase === "reveal") nextOrEnd(r);
+  else if (r.phase === "vote") revealMatchup(r);
+  else if (r.phase === "reveal") startMatchup(r);
   if (notes.length) r.log = `${notes.join(" ")} ${r.log || ""}`.trim();
   bump(r);
 }
@@ -206,10 +234,10 @@ function humanIsBack(room, p, reason) {
 }
 function maybeAdvance(room) {
   const act = activeSeats(room).filter((s) => !room.players[s].botControlled);   // away seats are not waited for
-  if (room.phase === "write" && act.every((s) => room.subs[s] !== undefined)) { beginVote(room); return true; }
+  if (room.phase === "write" && act.every((s) => promptsOf(room, s).every((m) => m.subs[s] !== undefined))) { beginVote(room); return true; }
   if (room.phase === "vote") {
-    // everyone active must vote (including non-submitters)
-    if (act.every((s) => room.votes[s] !== undefined)) { beginReveal(room, false); return true; }
+    const m = currentMatchup(room);
+    if (m && act.filter((s) => !m.seats.includes(s)).every((s) => m.votes[s] !== undefined)) { revealMatchup(room); return true; }
   }
   return false;
 }
@@ -221,25 +249,30 @@ function stateFor(room, seat) {
   return {
     code: room.code, status: room.status, phase: room.phase,
     round: room.round || 0, rounds: ROUNDS,
-    prompt: room.prompt || null, log: room.log, winner: room.winner != null ? room.winner : null,
+    log: room.log, winner: room.winner != null ? room.winner : null,
     phaseEndsAt: room.phaseEndsAt || null,
     hostSeat: room.players.findIndex((p) => p.id === room.host),
     minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS,
     players: room.players.map((p, s) => ({
       name: p.name, avatar: p.avatar, left: p.left, connected: p.connected, botControlled: !!p.botControlled,
       score: room.scores ? room.scores[s] : 0,
-      submitted: room.phase === "write" ? room.subs && room.subs[s] !== undefined : undefined,
-      voted: room.phase === "vote" ? room.votes && room.votes[s] !== undefined : undefined,
+      submitted: room.phase === "write" ? promptsOf(room, s).every((m) => m.subs[s] !== undefined) : undefined,
+      voted: room.phase === "vote" ? (() => { const m = currentMatchup(room); return !!m && (m.seats.includes(s) || m.votes[s] !== undefined); })() : undefined,
     })),
-    yourSub: room.subs && seat >= 0 ? room.subs[seat] ?? null : null,
-    yourVote: room.votes && seat >= 0 ? room.votes[seat] ?? null : null,
-    entries: room.order ? room.order.map((e) => ({
-      id: e.id,
-      text: e.text,
-      mine: e.seat === seat,
-      votes: revealPhase ? (room.tally ? room.tally[e.id] || 0 : 0) : undefined,
-      by: revealPhase ? e.seat : undefined,
-    })) : null,
+    yourPrompts: seat >= 0 && room.matchups ? promptsOf(room, seat).map((m) => ({ id: m.id, prompt: m.prompt, text: m.subs[seat] ?? null })) : [],
+    yourVote: (() => { const m = currentMatchup(room); return m && seat >= 0 ? m.votes[seat] ?? null : null; })(),
+    matchup: (() => {
+      const m = currentMatchup(room);
+      if (!m || !m.entries || room.phase === "write") return null;
+      const shown = revealPhase || m.done;
+      return {
+        id: m.id, index: room.mi, count: room.matchups.length, prompt: m.prompt,
+        contestant: m.seats.includes(seat),
+        canVote: room.phase === "vote" && seat >= 0 && !m.seats.includes(seat) && !room.players[seat].left,
+        entries: m.entries.map((e) => ({ id: e.id, text: e.text, mine: e.seat === seat, votes: shown ? e.votes : undefined, by: shown ? e.seat : undefined, bonus: shown ? e.bonus : undefined, pts: shown ? e.pts : undefined })),
+      };
+    })(),
+    matchups: over && room.matchups ? room.matchups.map((m) => ({ prompt: m.prompt, entries: (m.entries || []).map((e) => ({ text: e.text, by: e.seat, votes: e.votes || 0, pts: e.pts || 0, bonus: e.bonus || 0 })) })) : undefined,
     voice: room.voice ? Array.from(room.voice) : [],
     chat: (room.chat || []).slice(-60),
   };
@@ -335,7 +368,7 @@ io.on("connection", (socket) => {
     bump(room);
   });
 
-  socket.on("submit", ({ text } = {}) => {
+  socket.on("submit", ({ id, text } = {}) => {   // T13: one answer per prompt; { id } names the prompt (first unanswered when omitted)
     const room = currentRoom();
     if (!room || room.status !== "playing" || room.phase !== "write") return;
     const seat = mySeat();
@@ -344,7 +377,10 @@ io.on("connection", (socket) => {
     humanIsBack(room, me, "took the seat back"); me.timeouts = 0;
     text = clean(text, 90);
     if (!text) return socket.emit("err", "Write something first.");
-    room.subs[seat] = text;
+    const mine = promptsOf(room, seat);
+    const m = id != null ? mine.find((x) => x.id === id) : mine.find((x) => x.subs[seat] === undefined);
+    if (!m) return socket.emit("err", "That prompt isn't yours.");
+    m.subs[seat] = text;
     if (!maybeAdvance(room)) { room.log = "Answers are coming in…"; refreshAfkClock(room); }
     bump(room);
   });
@@ -354,20 +390,21 @@ io.on("connection", (socket) => {
     if (!room || room.status !== "playing" || room.phase !== "vote") return;
     const seat = mySeat();
     const me = room.players[seat];
-    if (!me || me.left || !room.order) return;
+    const m = currentMatchup(room);
+    if (!me || me.left || !m || !m.entries) return;
     humanIsBack(room, me, "took the seat back"); me.timeouts = 0;
-    const entry = room.order.find((e) => e.id === id);
+    if (m.seats.includes(seat)) return socket.emit("err", "Nice try — this one's yours. Sit tight.");
+    const entry = m.entries.find((e) => e.id === id);
     if (!entry) return;
-    if (entry.seat === seat) return socket.emit("err", "Nice try — you can't vote for yourself.");
-    room.votes[seat] = id;
+    m.votes[seat] = id;
     if (!maybeAdvance(room)) refreshAfkClock(room);
     bump(room);
   });
 
-  socket.on("next", () => { // host can skip the reveal early
+  socket.on("next", () => { // host can skip the reveal early → next matchup (or next round / final scores)
     const room = currentRoom();
     if (!room || room.status !== "playing" || room.phase !== "reveal" || room.host !== socket.data.playerId) return;
-    nextOrEnd(room);
+    startMatchup(room);
     bump(room);
   });
   socket.on("takeSeat", () => {
@@ -470,4 +507,5 @@ setInterval(() => {
   for (const [code, room] of rooms) if (now - room.touched > 2 * 60 * 60 * 1000) deleteRoom(code);
 }, 10 * 60 * 1000);
 
-server.listen(PORT, () => console.log("Punchlines running on port " + PORT));
+if (require.main === module) server.listen(PORT, () => console.log("Punchlines running on port " + PORT));
+module.exports = { makeMatchups };

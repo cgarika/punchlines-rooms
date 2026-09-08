@@ -80,6 +80,15 @@
     box-shadow:0 3px 0 rgba(0,0,0,.28), 0 18px 38px rgba(0,0,0,.45), inset 0 0 0 5px rgba(255,255,255,.09);
     text-shadow:0 2px 8px rgba(0,0,0,.4); }
   .writebox{ width:100%; max-width:560px; margin-top:12px; }
+  .writewrap{ width:100%; max-width:560px; display:flex; flex-direction:column; gap:14px; }
+  .writewrap .promptcard{ font-size:17px; padding:16px 16px; }
+  .writewrap .promptcard .ptag{ display:block; font-size:11px; letter-spacing:.12em; color:rgba(255,255,255,.7); margin-bottom:4px; }
+  .writewrap textarea{ margin-top:8px; }
+  .writewrap .locked{ margin-top:8px; padding:12px 14px; border-radius:12px; background:rgba(255,255,255,.08); font-weight:800; }
+  .writewrap .locked small{ display:block; color:var(--gold); font-size:11px; letter-spacing:.1em; margin-bottom:2px; }
+  .mtag{ display:block; font-size:11px; letter-spacing:.12em; color:rgba(255,255,255,.7); margin-bottom:6px; }
+  .entry .bonus{ display:inline-block; margin-left:8px; padding:2px 8px; border-radius:999px; background:var(--gold); color:#33260f; font-size:11px; letter-spacing:.06em; }
+  .entry.contest{ cursor:default; }
   .entry{ width:100%; text-align:left; padding:14px 16px; border-radius:14px; margin-top:9px; cursor:pointer;
     border:1px solid rgba(120,90,40,.35); background:linear-gradient(165deg,#fbf3de,#eee0ba); color:#33260f;
     font-family:inherit; font-weight:800; font-size:15.5px; line-height:1.4; transition:transform .1s var(--ease);
@@ -188,11 +197,8 @@
   <div class="wordmark small"><span class="p1">PUNCH</span><span class="p2">LINES</span><span class="roomtag" id="gameCode"></span></div>
   <div class="topbar"><div class="roundtag" id="roundtag"></div><div class="timer" id="timer"><span id="timerNum">–</span></div></div>
   <div class="strip" id="strip"></div>
-  <div class="promptcard" id="promptcard"></div>
-  <div class="writebox" id="writebox">
-    <textarea id="subIn" maxlength="90" placeholder="Type something devastating…"></textarea>
-    <button class="btn pink mt10" id="subBtn">Lock it in</button>
-  </div>
+  <div class="writewrap" id="writewrap"></div>
+  <div class="promptcard hidden" id="promptcard"></div>
   <div class="entrywrap" id="entrywrap"></div>
   <button class="btn orange small mt12 hidden" id="nextBtn">Next round →</button>
   <div class="actionhint" id="actionhint"></div>
@@ -312,7 +318,7 @@ function tone(f,dur,type,vol,when){
     o.start(t); o.stop(t+dur+.02); }catch(e){}
 }
 function shake(el){ if(!el) return; el.classList.remove("jshake"); void el.offsetWidth; el.classList.add("jshake"); }
-let S = { room:null, mySeat:-1 };
+let S = { room:null, mySeat:-1, drafts:{}, wkey:"" };
 let chatOpen=false, unread=0, lastChatLen=0, prevEK="";
 
 const AV = ["🎤","😂","🤡","🦄","🌶️","🐔","👵","🥸","💅","🦆","🧨","🍌"];
@@ -359,49 +365,60 @@ function renderLobby(r){
 function renderGame(r){
   show("game");
   $("gameCode").textContent = "· " + r.code;
-  $("roundtag").textContent = r.status==="over" ? "FINAL SCORES" : `ROUND ${r.round} OF ${r.rounds} · ${r.phase.toUpperCase()}`;
+  const mu = r.matchup;
+  $("roundtag").textContent = r.status==="over" ? "FINAL SCORES" : r.phase==="write" ? `ROUND ${r.round} OF ${r.rounds} · WRITE` : mu ? `ROUND ${r.round} OF ${r.rounds} · MATCHUP ${mu.index+1}/${mu.count}` : `ROUND ${r.round} OF ${r.rounds}`;
   $("strip").innerHTML = r.players.map((p,i)=>`
     <div class="pill${p.left?" gone":""}">${p.left?"💀":p.avatar} ${i===S.mySeat?"You":esc(p.name)}${p.botControlled?' <span class="tick" title="Away — the room no longer waits for them">💤</span>':""}
       <span class="sc">${p.score}</span>
       ${r.phase==="write"&&p.submitted?'<span class="tick">✔</span>':""}
       ${r.phase==="vote"&&p.voted?'<span class="tick">🗳</span>':""}
     </div>`).join("");
-  $("promptcard").textContent = r.prompt || "";
-  $("promptcard").classList.toggle("hidden", !r.prompt || r.status==="over");
-
   const me = r.players[S.mySeat];
-  const iWrite = r.phase==="write" && me && !me.left && r.yourSub===null;
-  $("writebox").classList.toggle("hidden", !(r.phase==="write" && me && !me.left));
-  $("subBtn").disabled = !iWrite || !$("subIn").value.trim();   // no locking in an empty answer
-  $("subBtn").textContent = r.yourSub!==null ? "Locked ✔" : "Lock it in";
-
-  const ek = r.phase + ":" + r.round;
+  // T13 write phase: two prompt cards, each with its own answer box
+  const writing = r.phase==="write" && r.status==="playing";
+  const wkey = writing ? r.round + ":" + (r.yourPrompts||[]).map(p=>p.id+(p.text!==null?"L":"")).join(",") : "";
+  if (wkey !== S.wkey){
+    S.wkey = wkey;
+    $("writewrap").innerHTML = !writing ? "" : (r.yourPrompts||[]).map((p,k)=>`
+      <div class="promptcard"><span class="ptag">PROMPT ${k+1} OF ${(r.yourPrompts||[]).length}</span>${esc(p.prompt)}
+        ${p.text!==null ? `<div class="locked"><small>LOCKED ✔</small>${esc(p.text)}</div>`
+          : `<textarea data-id="${p.id}" maxlength="90" placeholder="Type something devastating…">${esc(S.drafts[p.id]||"")}</textarea><button class="btn pink mt10" data-lock="${p.id}" ${(S.drafts[p.id]||"").trim()?"":"disabled"}>Lock it in</button>`}
+      </div>`).join("") + (me && me.left ? "" : "");
+  }
+  $("writewrap").classList.toggle("hidden", !writing);
+  // vote / reveal: the current matchup
+  const showMu = !!mu && (r.phase==="vote"||r.phase==="reveal");
+  $("promptcard").classList.toggle("hidden", !showMu);
+  if (showMu) $("promptcard").innerHTML = `<span class="mtag">MATCHUP ${mu.index+1} OF ${mu.count}${mu.contestant?" · YOU'RE IN THIS ONE":""}</span>${esc(mu.prompt)}`;
+  const ek = r.phase + ":" + r.round + ":" + (mu?mu.index:"-");
   const freshDeal = ek !== prevEK && (r.phase==="vote");
   prevEK = ek;
   $("entrywrap").classList.toggle("nodeal", !freshDeal);
   let entriesHTML = "";
-  if ((r.phase==="vote"||r.phase==="reveal"||r.status==="over") && r.entries){
-    entriesHTML = r.entries.map((e,k)=>{
+  if (showMu && mu.entries){
+    entriesHTML = mu.entries.map((e,k)=>{
       const revealed = e.by!==undefined;
       const picked = r.yourVote===e.id;
-      const cls = "entry"+(e.mine?" mine":"")+(picked?" picked":"");
-      const who = revealed ? `<div class="who"><span>— ${esc(r.players[e.by].name)}</span><span class="pts">${e.votes} vote${e.votes===1?"":"s"} · +${e.votes*100}</span></div>` : "";
-      const tag = e.mine && !revealed ? `<div class="tag">YOURS — can't vote for it</div>` : "";
-      return `<button class="${cls}" data-id="${e.id}" style="--dd:${k*0.07}s" ${e.mine||revealed?"disabled":""}>${tag}${esc(e.text)}${who}</button>`;
+      const cls = "entry"+(e.mine?" mine":"")+(picked?" picked":"")+(mu.contestant&&!e.mine?" contest":"");
+      const who = revealed ? `<div class="who"><span>— ${esc(r.players[e.by]?r.players[e.by].name:"?")}</span><span class="pts">${e.votes} vote${e.votes===1?"":"s"} · +${e.pts}${e.bonus?`<span class="bonus">QUIPLASH! +${e.bonus}</span>`:""}</span></div>` : "";
+      const tag = e.mine && !revealed ? `<div class="tag">YOURS — the others decide</div>` : "";
+      const disabled = revealed || !mu.canVote;
+      return `<button class="${cls}" data-id="${e.id}" style="--dd:${k*0.07}s" ${disabled?"disabled":""}>${tag}${esc(e.text)}${who}</button>`;
     }).join("");
   }
   $("entrywrap").innerHTML = entriesHTML;
   $("nextBtn").classList.toggle("hidden", !(r.phase==="reveal" && S.mySeat===r.hostSeat));
+  if (mu) $("nextBtn").textContent = mu.index+1 < mu.count ? "Next matchup →" : r.round < r.rounds ? "Next round →" : "Final scores →";
 
   const meP = r.players[S.mySeat]; const meBot = meP && meP.botControlled && r.status==="playing";
   $("seatBackBtn").classList.toggle("hidden", !meBot);
   if (r.status==="over") $("actionhint").innerHTML = "";
   else if (meBot) $("actionhint").innerHTML = "You were marked away — <b>take your seat back</b> (or just answer) to rejoin.";
-  else if (r.phase==="write") $("actionhint").innerHTML = r.yourSub!==null ? "Locked. Waiting for the slow typists…" : "Write your answer — <b>nobody sees who wrote what</b>.";
-  else if (r.phase==="vote") $("actionhint").innerHTML = r.yourVote ? "Vote locked. Sweating yet?" : "<b>Tap the funniest</b> — you can't vote for your own.";
+  else if (r.phase==="write") $("actionhint").innerHTML = (r.yourPrompts||[]).every(p=>p.text!==null) ? "Both locked. Waiting for the slow typists…" : "Answer <b>both prompts</b> — nobody sees who wrote what.";
+  else if (r.phase==="vote") $("actionhint").innerHTML = mu&&mu.contestant ? "This one's yours — <b>the others decide</b>." : r.yourVote ? "Vote locked. Sweating yet?" : "<b>Tap the funnier answer.</b> Unanimous wins earn a bonus.";
   else if (r.phase==="reveal") $("actionhint").innerHTML = "The authors, revealed. Judge them.";
   $("log").textContent = r.log || "";
-  $("log").classList.toggle("hidden", /^Round \d+ of \d+\. Fill in the blank|^Vote for the funniest/.test(r.log || ""));   // the round tag / action hint already say it
+  $("log").classList.toggle("hidden", /^Round \d+ of \d+\. Two prompts|^Matchup \d+ of \d+\./.test(r.log || ""));   // the round tag / action hint already say it
   $("overbox").classList.toggle("hidden", r.status!=="over");
   if (r.status==="over"){
     $("winname").textContent = r.winner!=null ? r.players[r.winner].name + " wins the mic!" : "Game over";
@@ -412,10 +429,20 @@ function renderGame(r){
   }
   drawMsgs(r); renderVoice(r);
 }
-$("subBtn").onclick = ()=>{ const t=$("subIn").value.trim(); if(!t) return toast("Write something first."); socket.emit("submit",{ text:t }); $("subIn").value=""; };
+$("writewrap").addEventListener("input",(e)=>{
+  const ta=e.target.closest("textarea[data-id]"); if(!ta) return;
+  S.drafts[ta.dataset.id]=ta.value;
+  const b=$("writewrap").querySelector(`[data-lock="${ta.dataset.id}"]`); if(b) b.disabled=!ta.value.trim();
+});
+$("writewrap").addEventListener("click",(e)=>{
+  const b=e.target.closest("[data-lock]"); if(!b||b.disabled) return;
+  const id=b.dataset.lock; const ta=$("writewrap").querySelector(`textarea[data-id="${id}"]`); const t=ta?ta.value.trim():"";
+  if(!t) return toast("Write something first.");
+  socket.emit("submit",{ id, text:t }); delete S.drafts[id];
+});
 $("entrywrap").addEventListener("click",(e)=>{
   const b=e.target.closest(".entry"); if(!b||b.disabled) return;
-  const r=S.room; if(!r||r.phase!=="vote") return;
+  const r=S.room; if(!r||r.phase!=="vote"||!r.matchup||!r.matchup.canVote) return;
   socket.emit("vote",{ id:b.getAttribute("data-id") });
 });
 $("nextBtn").onclick = ()=>socket.emit("next");
@@ -537,7 +564,6 @@ socket.on("voice", async (msg)=>{
     } else if (d.ice){ await pc.addIceCandidate(d.ice); }
   }catch(e){}
 });
-$("subIn").addEventListener("input", ()=>{ if (S.room && S.room.phase==="write") $("subBtn").disabled = !$("subIn").value.trim() || !!S.room.yourSub; });
 </script>
 </body>
 </html>
