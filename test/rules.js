@@ -1,13 +1,14 @@
 /*
  Punchlines — rules & anonymity suite (proven against v1)
  Run:  ROUNDS=2 REVEAL_MS=600 PORT=3511 node server.js   then:  node test/rules.js
+   or:  TEST_SPAWN_MAIN=1 node test/rules.js   (starts and stops its own copy on TEST_PORT; npm test)
  Proves: secret submissions stay anonymous during voting (no author/tally
  fields leak; only your own entry carries mine:true), self-votes rejected,
  auto-advance when all submitted/voted, votes x100 scoring, host skip of the
  reveal, fresh prompt each round, correct winner over a full 2-round game.
 */
 const { io } = require("socket.io-client");
-const URL = "http://localhost:3511";
+const URL = "http://localhost:" + (process.env.TEST_PORT || 3511);   // TEST_PORT moves it off a busy 3511
 const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
 
 function mk(name){
@@ -29,8 +30,10 @@ function mk(name){
   });
   return s;
 }
+let mainSrv = null;
 (async()=>{
   try{
+    if (process.env.TEST_SPAWN_MAIN) { mainSrv = require("child_process").spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(process.env.TEST_PORT || 3511), ROUNDS:"2", REVEAL_MS:"600" }, stdio:"ignore" }); await sleep(800); }
     // ---- T13 unit: prompt assignment ----
     { const { makeMatchups } = require("../server.js");
       for (let P=3; P<=12; P++) {
@@ -59,7 +62,9 @@ function mk(name){
     for (const id of ids1) if (cs.filter(c=>c.st.yourPrompts.some(p=>p.id===id)).length!==2) throw new Error("each prompt must go to exactly two players");
     const round1Prompts = new Set(cs.flatMap(c=>c.st.yourPrompts.map(p=>p.prompt)));
     const submitAll=(c,tag)=>{ for (const p of c.st.yourPrompts) if (p.text===null) c.emit("submit",{id:p.id,text:tag+" from "+c.nm}); };
-    A.emit("submit",{id:"nope",text:"x"}); await sleep(120); if (!A.errs.length) throw new Error("submit to a foreign prompt id was accepted"); A.errs.length=0;
+    A.emit("submit",{id:"nope",text:"x"});
+    for (let k=0;k<300 && !A.errs.length;k++) await sleep(10);   // the answer is read by the moderation model first (its first read loads the model), so the refusal can take a moment
+    if (!A.errs.length) throw new Error("submit to a foreign prompt id was accepted"); A.errs.length=0;
     submitAll(A,"answer"); await sleep(150);
     if (A.st.phase!=="write") throw new Error("advanced before all submitted");
     if (!A.st.players[A.seat].submitted || A.st.players[B.seat].submitted) throw new Error("submitted flags wrong");
@@ -130,8 +135,8 @@ function mk(name){
     // ---- Test 3 (T1 AFK policy): own fast-clock server on 3521 ----
     {
       const { spawn } = require("child_process");
-      const WRITE=700, AFK=250, P=3521, URL2="http://localhost:"+P;
-      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), ROUNDS:"6", WRITE_MS:String(WRITE), VOTE_MS:String(WRITE), REVEAL_MS:"60", AFK_MS:String(AFK) }, stdio:"ignore" });
+      const WRITE=700, AFK=250, P=Number(process.env.TEST_PORT2 || 3521), URL2="http://localhost:"+P;
+      const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), ROUNDS:"6", WRITE_MS:String(WRITE), VOTE_MS:String(WRITE), REVEAL_MS:"60", AFK_MS:String(AFK), AFK_GRACE_MS:"0" }, stdio:"ignore" });
       await sleep(600);
       const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.nm=name; c.st=null; c.seat=-1; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room&&room.log) c.logs.push(room.log); }); return c; };
       const wait=async(fn,ms)=>{ const t0=Date.now(); while(Date.now()-t0<ms){ if(fn()) return true; await sleep(15);} return false; };
@@ -149,13 +154,37 @@ function mk(name){
           const roundThen=C.st.round; if(!(await wait(()=>C.st.round>roundThen||C.st.status==="over", 3000))) throw new Error("AFK: the room still waited for the away player");
           C.emit("takeSeat"); if(!(await wait(()=>!C.st.players[seat].botControlled,1500))) throw new Error("AFK: takeSeat did not clear the flag");
           console.log("PASS AFK 3 missed phases → away seat skipped, takeSeat brings the player back"); [A,B,C].forEach(c=>c.disconnect()); }
+        // 3c. a short dropout (a phone in the background) is waited out: the fast clock only runs after the grace, and a player who is back is not counted as missing
+        { const srv3 = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P+1), ROUNDS:"6", WRITE_MS:"3000", VOTE_MS:"3000", REVEAL_MS:"60", AFK_MS:"100", AFK_GRACE_MS:"900" }, stdio:"ignore" });
+          try {
+            await sleep(600);
+            const U3="http://localhost:"+(P+1);
+            const mk3=(name,id)=>{ const c=io(U3,{transports:["websocket"],reconnection:false}); c.nm=name; c.st=null; c.seat=-1; c.pid=id; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; }); return c; };
+            const A=mk3("gA","ga"+Math.random()), B=mk3("gB","gb"+Math.random()), C=mk3("gC","gc"+Math.random());
+            await sleep(250); let code=null; A.on("joined",j=>{code=j.code;});
+            A.emit("create",{name:"gA",playerId:A.pid,avatar:"🎤"}); await wait(()=>code,2000);
+            B.emit("join",{code,name:"gB",playerId:B.pid,avatar:"🎤"}); C.emit("join",{code,name:"gC",playerId:C.pid,avatar:"🎤"});
+            await wait(()=>A.st&&A.st.players.length===3,2000); A.emit("start"); await wait(()=>A.st&&A.st.phase==="write",2000);
+            C.disconnect(); const t0=Date.now();
+            for (const p of A.st.yourPrompts) A.emit("submit",{id:p.id,text:"a"}); for (const p of B.st.yourPrompts) B.emit("submit",{id:p.id,text:"b"});
+            await sleep(600);
+            if (A.st.phase!=="write") throw new Error("AFK grace: the write phase ended "+(Date.now()-t0)+" ms after a player's link dropped (grace 900)");
+            // back before the grace is up
+            const C2=mk3("gC", C.pid); C2.emit("join",{code,name:"gC",playerId:C.pid,avatar:"🎤"});
+            await sleep(1100);
+            if (A.st.phase!=="write") throw new Error("AFK grace: the phase ended although the player was back");
+            if (A.st.players[C.seat===-1?2:2].botControlled) throw new Error("AFK grace: a returning player was marked away");
+            console.log("PASS AFK grace: a link that drops for under the grace neither ends the phase early nor counts as a miss");
+            [A,B,C2].forEach(c=>c.disconnect());
+          } finally { srv3.kill(); }
+        }
       } finally { srv.kill(); }
     }
 
     // ---- T3 host handover: host disconnects during play → another human becomes host ----
     {
       const { spawn } = require("child_process");
-      const P=3531, URL2="http://localhost:"+P;
+      const P=Number(process.env.TEST_PORT3 || 3531), URL2="http://localhost:"+P;
       const srv = spawn(process.execPath, ["server.js"], { env: { ...process.env, PORT:String(P), WRITE_MS:"60000", VOTE_MS:"60000", REVEAL_MS:"600" }, stdio:"ignore" });
       await sleep(600);
       const mk2=(name)=>{ const c=io(URL2,{transports:["websocket"],reconnection:false}); c.st=null; c.seat=-1; c.logs=[]; c.on("state",({room,mySeat})=>{ c.st=room; c.seat=mySeat; if(room&&room.log) c.logs.push(room.log); }); return c; };
@@ -175,6 +204,7 @@ function mk(name){
       } finally { srv.kill(); }
     }
     console.log("ALL PUNCHLINES TESTS PASS");
+    if (mainSrv) mainSrv.kill();
     process.exit(0);
-  }catch(e){ console.error("FAIL:", e.message); process.exit(1); }
+  }catch(e){ console.error("FAIL:", e.message); if (mainSrv) mainSrv.kill(); process.exit(1); }
 })();
