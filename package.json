@@ -4,7 +4,7 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "node test/guard.js && node test/plus_packs.js && node test/reactions.js && node test/moderation.js && node test/afk.js && TEST_SPAWN_MAIN=1 node test/rules.js && node test/summary.js && node test/comics.js && node test/pacing.js && node test/hold.js && node test/quick.js && node test/people.js && node test/plus_wallet.js && node test/roomcode.js",
+    "test": "node test/guard.js && node test/plus_packs.js && node test/reactions.js && node test/moderation.js && node test/afk.js && TEST_SPAWN_MAIN=1 node test/rules.js && node test/summary.js && node test/comics.js && node test/pacing.js && node test/hold.js && node test/quick.js && node test/people.js && node test/plus_wallet.js && node test/roomcode.js && node test/voice.js && node test/friendsplayed.js",
     "start": "node server.js"
   },
   "keywords": [],

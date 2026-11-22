@@ -4,6 +4,8 @@ const crypto = require("crypto");
 const express = require("express");
 const { Server } = require("socket.io");
 const Reactions = require("./reactions");   // the cartoon stickers (2026-10-15)
+const Voice = require("./voice");   // voice chat in private rooms, EOS (2026-11-18; the file every server shares)
+const Played = require("./friendsplayed");   // Friends: "last played with" when a game ends (2026-11-19; the file every server shares)
 const Quick = require("./quickmatch");   // Quick Play: 2.5 s to find people, comics fill the empty seats (2026-11-01; the file every server shares)
 const Plus = require("./plus");
 const Packs = require("./packs");   // GameNest Plus's prompt packs (2026-10-17)   // GameNest Plus: the room's flag and each player's look (2026-10-16)
@@ -561,6 +563,8 @@ function stateFor(room, seat) {
     chat: (room.chat || []).slice(-60),
     ...Reactions.view(room),   // 2026-10-15: reactionsOn and the last reactions (after every old field)
     ...Quick.view(room),   // quick play (2026-11-01): quick { searching, seats, fillAt, now } while a quick room is finding people
+    ...Voice.view(room),   // voice chat (2026-11-18): gnVoice { on, peers }
+    ...Played.view(room, "punchlines"),   // Friends (2026-11-19): reports a finished game once; adds no field
     pack: packOf(room),   // GameNest Plus's prompt pack in use (2026-10-17), after them
   };
 }
@@ -659,6 +663,7 @@ io.on("connection", (socket) => {
   socket.data.playerId = null;
   socket.data.code = null;
   const currentRoom = () => rooms.get(socket.data.code);
+  Voice.wire({ on: on, room: currentRoom, me: () => socket.data.playerId, bump: bump, emit: (ev, d) => socket.emit(ev, d) });   // voice chat in private rooms (2026-11-18)
   Reactions.wire({ on, room: currentRoom, me: () => socket.data.playerId, isHost: (r) => r.host === socket.data.playerId, bump });
   const attach = (code) => { socket.data.code = code; if (!roomSockets.has(code)) roomSockets.set(code, new Set()); roomSockets.get(code).add(socket); };
   const detach = () => { const set = roomSockets.get(socket.data.code); if (set) set.delete(socket); socket.data.code = null; };
